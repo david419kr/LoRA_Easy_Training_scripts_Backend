@@ -95,12 +95,22 @@ def validate_args(args: dict) -> tuple[bool, list[str], dict]:
         if "fa" in value:
             del value["fa"]
 
+    anima_mode = bool(output_args.get("anima_mode", False))
     file_inputs = [
         {"name": "pretrained_model_name_or_path", "required": True},
         {"name": "output_dir", "required": True},
         {"name": "sample_prompts", "required": False},
         {"name": "logging_dir", "required": False},
     ]
+    if anima_mode:
+        file_inputs.extend(
+            [
+                {"name": "qwen3", "required": True},
+                {"name": "vae", "required": True},
+                {"name": "llm_adapter_path", "required": False},
+                {"name": "t5_tokenizer_path", "required": False},
+            ]
+        )
 
     for file in file_inputs:
         if file["required"] and file["name"] not in output_args:
@@ -113,7 +123,58 @@ def validate_args(args: dict) -> tuple[bool, list[str], dict]:
             continue
         elif file["name"] in output_args:
             output_args[file["name"]] = Path(output_args[file["name"]]).as_posix()
-    if "network_module" not in output_args:
+
+    if anima_mode and "qwen3" in output_args:
+        qwen3_path = Path(output_args["qwen3"])
+        if qwen3_path.is_dir():
+            qwen3_config = qwen3_path.joinpath("config.json")
+            if not qwen3_config.is_file():
+                qwen3_files = sorted(qwen3_path.glob("*.safetensors"))
+                if len(qwen3_files) == 1:
+                    output_args["qwen3"] = qwen3_files[0].as_posix()
+                    print(
+                        f"qwen3 folder did not include config.json; using detected file {qwen3_files[0].name}"
+                    )
+                else:
+                    passed_validation = False
+                    errors.append(
+                        "qwen3 points to a folder without config.json. "
+                        "Use the Qwen3 model folder itself, or set qwen3 to qwen_3_06b_base.safetensors."
+                    )
+            else:
+                try:
+                    model_type = json.loads(qwen3_config.read_text(encoding="utf-8")).get("model_type", "")
+                except (OSError, json.JSONDecodeError):
+                    model_type = ""
+                if model_type and model_type != "qwen3":
+                    passed_validation = False
+                    errors.append(
+                        f"qwen3 config.json model_type is '{model_type}', expected 'qwen3'. "
+                        "Point to the Qwen3 text encoder folder/file."
+                    )
+
+    if "anima_mode" in output_args:
+        del output_args["anima_mode"]
+    if anima_mode:
+        if output_args.get("mixed_precision", "").lower() == "fp16":
+            print("Anima mode detected: forcing mixed_precision=bf16 to avoid NaN instability.")
+            output_args["mixed_precision"] = "bf16"
+        if "full_fp16" in output_args:
+            print("Anima mode detected: full_fp16 is not recommended, disabling it.")
+            del output_args["full_fp16"]
+        for arg in [
+            "v2",
+            "sdxl",
+            "clip_skip",
+            "v_parameterization",
+            "scale_v_pred_loss_like_noise_pred",
+            "fp8_base",
+            "fp8_base_unet",
+        ]:
+            if arg in output_args:
+                del output_args[arg]
+        output_args["network_module"] = "networks.lora_anima"
+    elif "network_module" not in output_args:
         if "guidance_scale" in output_args:
             output_args["network_module"] = "networks.lora_flux"
         else:

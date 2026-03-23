@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -102,7 +103,62 @@ def check_50_series_gpu():
         return False
 
 
+def get_torch_version(venv_python: Path) -> str:
+    try:
+        output = subprocess.check_output(
+            [str(venv_python), "-c", "import torch; print(torch.__version__)"],
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+    return output.strip()
+
+
+def get_triton_windows_spec(torch_version: str) -> str:
+    # Mapping from triton-lang/triton-windows README compatibility table.
+    match = re.match(r"^(\d+)\.(\d+)", torch_version)
+    if not match:
+        return "triton-windows<3.7"
+    major, minor = int(match.group(1)), int(match.group(2))
+    if major != 2:
+        return "triton-windows<3.7"
+    mapping = {
+        4: "triton-windows>=3.1,<3.2",
+        5: "triton-windows>=3.1,<3.2",
+        6: "triton-windows>=3.2,<3.3",
+        7: "triton-windows>=3.3,<3.4",
+        8: "triton-windows>=3.4,<3.5",
+        9: "triton-windows>=3.5,<3.6",
+        10: "triton-windows>=3.6,<3.7",
+    }
+    return mapping.get(minor, "triton-windows<3.7")
+
+
+def ensure_triton_windows(venv_pip: Path, venv_python: Path) -> None:
+    if PLATFORM != "windows":
+        return
+    torch_version = get_torch_version(venv_python)
+    package_spec = get_triton_windows_spec(torch_version)
+    print(
+        f"Installing Triton for Windows from triton-lang/triton-windows "
+        f"(torch={torch_version or 'unknown'}, spec={package_spec})"
+    )
+    subprocess.run(
+        [str(venv_pip), "uninstall", "-y", "triton"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        subprocess.check_call([str(venv_pip), "install", "-U", package_spec])
+    except subprocess.CalledProcessError:
+        # Conservative fallback noted in triton-windows README.
+        subprocess.check_call([str(venv_pip), "install", "-U", "triton-windows<3.7"])
+
+
 def setup_venv(venv_pip):
+    venv_python = Path("venv/Scripts/python.exe" if PLATFORM == "windows" else "venv/bin/python")
     if check_50_series_gpu():
         subprocess.check_call(
             f"{venv_pip} install -U --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cu128",
@@ -119,12 +175,23 @@ def setup_venv(venv_pip):
             f"{venv_pip} install -U xformers==0.0.29.post3 --index-url https://download.pytorch.org/whl/cu124",
             shell=PLATFORM == "linux",
         )
+    ensure_triton_windows(venv_pip, venv_python)
     if PLATFORM == "windows":
         subprocess.check_call("venv\\Scripts\\python.exe ..\\fix_torch.py")
     subprocess.check_call(f"{venv_pip} install -U -r requirements.txt", shell=PLATFORM == "linux")
     subprocess.check_call(f"{venv_pip} install -U ../custom_scheduler/.", shell=PLATFORM == "linux")
     subprocess.check_call(f"{venv_pip} install -U -r ../requirements.txt", shell=PLATFORM == "linux")
     subprocess.check_call(f"{venv_pip} install -U ../lycoris/.", shell=PLATFORM == "linux")
+
+
+def sync_sd_scripts_latest():
+    try:
+        subprocess.check_call("git -C sd_scripts fetch origin --prune", shell=PLATFORM == "linux")
+        subprocess.check_call("git -C sd_scripts checkout origin/main", shell=PLATFORM == "linux")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to update sd_scripts to origin/main with error:\n {e}")
+        return False
+    return True
 
 
 # colab only
@@ -183,6 +250,8 @@ def main():
 
     subprocess.check_call("git submodule init", shell=PLATFORM == "linux")
     subprocess.check_call("git submodule update", shell=PLATFORM == "linux")
+    if not sync_sd_scripts_latest():
+        quit()
 
     if PLATFORM == "windows":
         print("setting execution policy to unrestricted")
