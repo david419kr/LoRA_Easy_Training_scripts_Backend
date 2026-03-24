@@ -117,6 +117,22 @@ def validate_args(args: dict) -> tuple[bool, list[str], dict]:
             passed_validation = False
             errors.append(f"{file['name']} is not found")
             continue
+        if file["name"] == "output_dir" and file["name"] in output_args:
+            output_dir = Path(output_args[file["name"]])
+            if not output_dir.exists():
+                if output_dir.parent.exists():
+                    output_dir.mkdir(parents=False, exist_ok=True)
+                    print(f"output_dir '{output_dir}' does not exist, creating folder.")
+                else:
+                    passed_validation = False
+                    errors.append(
+                        f"output_dir input '{output_args[file['name']]}' does not exist and parent folder is missing"
+                    )
+                    continue
+            if output_dir.is_file():
+                passed_validation = False
+                errors.append(f"output_dir input '{output_args[file['name']]}' is a file, expected a folder")
+                continue
         if file["name"] in output_args and not Path(output_args[file["name"]]).exists():
             passed_validation = False
             errors.append(f"{file['name']} input '{output_args[file['name']]}' does not exist")

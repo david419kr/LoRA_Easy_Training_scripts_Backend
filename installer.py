@@ -248,8 +248,8 @@ def main():
     if not check_version_and_platform() or not check_git_install():
         quit()
 
-    subprocess.check_call("git submodule init", shell=PLATFORM == "linux")
-    subprocess.check_call("git submodule update", shell=PLATFORM == "linux")
+    subprocess.check_call("git submodule sync --recursive", shell=PLATFORM == "linux")
+    subprocess.check_call("git submodule update --init --recursive", shell=PLATFORM == "linux")
     if not sync_sd_scripts_latest():
         quit()
 
