@@ -6,6 +6,8 @@ from pathlib import Path
 from library.train_util import BucketManager
 from PIL import Image
 
+VALID_RESUME_STEP_MODES = {"total", "additional"}
+
 
 def validate(args: dict) -> tuple[bool, bool, list[str], dict, dict]:
     over_errors = []
@@ -199,7 +201,67 @@ def validate_args(args: dict) -> tuple[bool, list[str], dict]:
     config_dict = json.loads(config.read_text()) if config.is_file() else {}
     if "colab" in config_dict and config_dict["colab"]:
         output_args["console_log_simple"] = True
+    apply_resume_step_mode(output_args, errors)
+    if errors:
+        passed_validation = False
     return passed_validation, errors, output_args
+
+
+def load_resume_state_step(resume_dir: str | Path) -> int:
+    train_state_file = Path(resume_dir).joinpath("train_state.json")
+    if not train_state_file.is_file():
+        raise ValueError(f"Resume state is missing train_state.json: {train_state_file}")
+    try:
+        data = json.loads(train_state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Resume state has unreadable train_state.json: {train_state_file}") from exc
+    current_step = data.get("current_step")
+    if not isinstance(current_step, int):
+        raise ValueError(f"Resume state train_state.json is missing an integer current_step: {train_state_file}")
+    if current_step < 0:
+        raise ValueError(f"Resume state current_step must be non-negative: {current_step}")
+    return current_step
+
+
+def resolve_resume_target_steps(current_step: int, requested_steps: int, mode: str) -> int:
+    if mode not in VALID_RESUME_STEP_MODES:
+        raise ValueError(f"Invalid resume_step_mode: {mode}")
+    if not isinstance(requested_steps, int):
+        raise ValueError("Resume additional steps must be an integer")
+    if requested_steps <= 0:
+        raise ValueError("Resume additional steps must be greater than 0")
+    if mode == "additional":
+        return current_step + requested_steps
+    return requested_steps
+
+
+def apply_resume_step_mode(args: dict, errors: list[str]) -> None:
+    mode = args.get("resume_step_mode")
+    if mode is None:
+        return
+    if mode not in VALID_RESUME_STEP_MODES:
+        errors.append(f"resume_step_mode must be one of {sorted(VALID_RESUME_STEP_MODES)}")
+        return
+    if "resume" in args:
+        args["resume"] = Path(args["resume"]).as_posix()
+    if args.get("initial_step") is not None or args.get("initial_epoch") is not None:
+        args["resume_step_mode"] = "total"
+        return
+    if mode != "additional":
+        args["resume_step_mode"] = "total"
+        return
+    if "resume" not in args or not args["resume"]:
+        errors.append("resume_step_mode 'additional' requires a resume state folder")
+        return
+    if "max_train_steps" not in args:
+        return
+    try:
+        current_step = load_resume_state_step(args["resume"])
+        args["max_train_steps"] = resolve_resume_target_steps(current_step, args["max_train_steps"], mode)
+    except ValueError as exc:
+        errors.append(str(exc))
+        return
+    args["resume_step_mode"] = "total"
 
 
 def validate_dataset_args(args: dict) -> tuple[bool, list[str], dict]:
